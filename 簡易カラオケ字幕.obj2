@@ -14,7 +14,8 @@
 --color@fgInnerColor:変化後文字色,0x0000FF
 --color@fgOuterColor:変化後輪郭色,0xFFFFFF
 
---select@textAlign:配置=0,中央揃え=0,左揃え=1,右揃え=2
+--select@textAlign:配置=4,左寄せ[上]=0,中央揃え[上]=1,右寄せ[上]=2,左寄せ[中]=3,中央揃え[中]=4,右寄せ[中]=5,左寄せ[下]=6,中央揃え[下]=7,右寄せ[下]=8
+--select@fakeAlign:嘘字幕配置=0,左寄せ=0,中央揃え=1,右寄せ=2
 --font@font:フォント,Meiryo UI
 --track@fontSize:フォントサイズ,1,400,120,1
 --check@isBold:太字,true
@@ -216,41 +217,46 @@ function main()
 	local bgRubyWidths = {}
 	local fgCharWidths = {}
 	local fgRubyWidths = {}
-	local textSize = 0
 
 
-	-- 字間機能オフの場合は字間の値を無効化
-	if not kerningMode then
+	-- 字間の設定
+	local kernControl = ""
+	if kerningMode then
+		kernControl = ((kerning >= 0) and "<p+" or "<p") .. tostring(kerning) .. ",+0>"
+	else
 		kerning = 0
 	end
 
 
-	-- 背景メインテキスト
+	-- 背景メインテキスト幅
 	obj.setfont(font, fontSize, decoration)
 	local tmpWidths = {}
 	for i = 1, #bgTexts do
-		obj.load("text", textPrefix .. table.concat({unpack(bgTexts, i)}, ""))
+		obj.load("text", textPrefix .. table.concat({unpack(bgTexts, i)}, kernControl))
 		tmpWidths[i] = obj.w
-		textSize = math.max(textSize, obj.h)
 	end
 	tmpWidths[#bgTexts + 1] = 0
 	for i = 1, #bgTexts do
 		bgCharWidths[i] = tmpWidths[i] - tmpWidths[i + 1]
 	end
-	bgTextWidth = (#bgTexts > 0) and (tmpWidths[1] + kerning * (#bgTexts - 1)) or 0
+	local bgTextWidth = tmpWidths[1]
 
 
-	-- 前景メインテキスト
+	-- 前景メインテキスト幅
 	for i = 1, #fgTexts do
-		obj.load("text", textPrefix .. table.concat({unpack(fgTexts, i)}, ""))
+		obj.load("text", textPrefix .. table.concat({unpack(fgTexts, i)}, kernControl))
 		tmpWidths[i] = obj.w
-		textSize = math.max(textSize, obj.h)
 	end
 	tmpWidths[#fgTexts + 1] = 0
 	for i = 1, #fgTexts do
 		fgCharWidths[i] = tmpWidths[i] - tmpWidths[i + 1]
 	end
-	fgTextWidth = (#fgTexts > 0) and (tmpWidths[1] + kerning * (#fgTexts - 1)) or 0
+	local fgTextWidth = tmpWidths[1]
+
+
+	-- メインテキスト高さ
+	obj.load("text", textPrefix .. table.concat(bgTexts, "") .. table.concat(fgTexts, ""))
+	local textHeight = obj.h
 
 
 	-- 背景ルビ
@@ -269,6 +275,11 @@ function main()
 	end
 
 
+	-- ルビ高さ
+	obj.load("text", textPrefix .. table.concat(bgRubys, "") .. table.concat(fgRubys, ""))
+	local rubyHeight = obj.h
+
+
 
 	---- 仮想バッファサイズ計算
 	local textWidth = math.max(bgTextWidth, fgTextWidth)
@@ -279,8 +290,8 @@ function main()
 		((fgRubyWidths[#fgRubyWidths] or 0) - (fgCharWidths[#fgCharWidths] or 0)) / 2 + rubyX,
 		0
 	)
-	local bufferWidth = (textAlign == 0) and (textWidth + marginWidth * 2) or (textWidth + marginWidth) * 2
-	local bufferHeight = textSize + 2 * (MARGIN_Y + math.ceil(math.abs(rubyY)) + math.max(rubySize, FONT_GUIDE[2] * 2))
+	local bufferWidth = textWidth + marginWidth * 2
+	local bufferHeight = textHeight + 2 * (MARGIN_Y + math.ceil(math.abs(rubyY)) + math.max(rubyHeight, FONT_GUIDE[2] * 2))
 
 
 
@@ -291,10 +302,7 @@ function main()
 	local charWidths = (bgIsLonger and bgCharWidths or fgCharWidths)
 
 	-- 対象メインテキストの左端位置
-	local startPosition =
-		(textAlign == 1) and 0              or	-- 左揃え
-		(textAlign == 2) and -textWidth     or	-- 右揃え
-		                     -textWidth / 2   	-- 中央揃え
+	local startPosition = -textWidth / 2
 	local clipping = startPosition + textWidth * progress / 100
 
 	-- 未指定の変化時間比率を既定値で埋める
@@ -322,7 +330,7 @@ function main()
 		local clippedCharLeft = startPosition
 		while timeBeatsSum * progress > (timeBeatsAccum + timeBeats[i]) * 100 do
 			timeBeatsAccum = timeBeatsAccum + timeBeats[i]
-			clippedCharLeft = clippedCharLeft + charWidths[i] + kerning
+			clippedCharLeft = clippedCharLeft + charWidths[i]
 			i = i + 1
 		end
 		local clippedCharRatio = (timeBeatsSum * progress / 100 - timeBeatsAccum) / timeBeats[i]
@@ -338,24 +346,16 @@ function main()
 
 	-- 背景メインテキストの左端位置
 	startPosition =
-		(textAlign == 1) and 0                or	-- 左揃え
-		(textAlign == 2) and -bgTextWidth     or	-- 右揃え
-		                     -bgTextWidth / 2   	-- 中央揃え
+		(fakeAlign == 0) and -textWidth / 2                   or	-- 嘘字幕左寄せ
+		(fakeAlign == 2) and  textWidth / 2 - bgTextWidth     or	-- 嘘字幕右寄せ
+		                                    - bgTextWidth / 2   	-- 嘘字幕中央揃え
 
 
 	-- 背景メインテキスト
 	obj.setfont(font, fontSize, decoration, bgInnerColor, bgOuterColor)
 	local position = startPosition
-	if kerningMode then
-		for i = 1, #bgTexts do
-			obj.load("text", textPrefix .. bgTexts[i])
-			obj.draw(position + bgCharWidths[i] / 2, 0)
-			position = position + bgCharWidths[i] + kerning
-		end
-	else
-		obj.load("text", textPrefix .. table.concat(bgTexts, ""))
-		obj.draw(position + bgTextWidth / 2, 0)
-	end
+	obj.load("text", textPrefix .. table.concat(bgTexts, kernControl))
+	obj.draw(position + bgTextWidth / 2, 0)
 
 
 	-- 背景ルビ
@@ -364,18 +364,22 @@ function main()
 		-- ルビ対象文字列の左端
 		local leftmost = startPosition
 		for j = 1, bgRubyPositions[i][1] - 1 do
-			leftmost = leftmost + bgCharWidths[j] + kerning
+			leftmost = leftmost + bgCharWidths[j]
 		end
 
 		-- ルビ対象文字列の右端
-		local rightmost = leftmost - kerning
+		local rightmost = leftmost
 		for j = bgRubyPositions[i][1], bgRubyPositions[i][2] do
-			rightmost = rightmost + bgCharWidths[j] + kerning
+			rightmost = rightmost + bgCharWidths[j]
+		end
+		if bgRubyPositions[i][2] < #bgTexts then
+			rightmost = rightmost - kerning
 		end
 
+		-- ルビ描画
 		if bgRubys[i] and bgRubys[i] ~= "" then
 			obj.load("text", textPrefix .. bgRubys[i])
-			obj.draw((leftmost + rightmost) / 2, rubyY - (textSize + rubySize) / 2)
+			obj.draw((leftmost + rightmost) / 2, rubyY - (textHeight + rubyHeight) / 2)
 		end
 	end
 
@@ -391,24 +395,16 @@ function main()
 
 	-- 前景メインテキストの左端位置
 	startPosition =
-		(textAlign == 1) and 0                or	-- 左揃え
-		(textAlign == 2) and -fgTextWidth     or	-- 右揃え
-		                     -fgTextWidth / 2   	-- 中央揃え
+		(fakeAlign == 0) and -textWidth / 2                   or	-- 嘘字幕左寄せ
+		(fakeAlign == 2) and  textWidth / 2 - fgTextWidth     or	-- 嘘字幕右寄せ
+		                                    - fgTextWidth / 2   	-- 嘘字幕中央揃え
 
 
 	-- 前景メインテキスト
 	obj.setfont(font, fontSize, decoration, fgInnerColor, fgOuterColor)
 	local position = startPosition
-	if kerningMode then
-		for i = 1, #fgTexts do
-			obj.load("text", textPrefix .. fgTexts[i])
-			obj.draw(position + fgCharWidths[i] / 2, 0)
-			position = position + fgCharWidths[i] + kerning
-		end
-	else
-		obj.load("text", textPrefix .. table.concat(fgTexts, ""))
-		obj.draw(position + fgTextWidth / 2, 0)
-	end
+	obj.load("text", textPrefix .. table.concat(fgTexts, kernControl))
+	obj.draw(position + fgTextWidth / 2, 0)
 
 
 	-- 前景ルビ
@@ -417,18 +413,22 @@ function main()
 		-- ルビ対象文字列の左端
 		local leftmost = startPosition
 		for j = 1, fgRubyPositions[i][1] - 1 do
-			leftmost = leftmost + fgCharWidths[j] + kerning
+			leftmost = leftmost + fgCharWidths[j]
 		end
 
 		-- ルビ対象文字列の右端
-		local rightmost = leftmost - kerning
+		local rightmost = leftmost
 		for j = fgRubyPositions[i][1], fgRubyPositions[i][2] do
-			rightmost = rightmost + fgCharWidths[j] + kerning
+			rightmost = rightmost + fgCharWidths[j]
+		end
+		if fgRubyPositions[i][2] < #fgTexts then
+			rightmost = rightmost - kerning
 		end
 
+		-- ルビ描画
 		if fgRubys[i] and fgRubys[i] ~= "" then
 			obj.load("text", textPrefix .. fgRubys[i])
-			obj.draw((leftmost + rightmost) / 2, rubyY - (textSize + rubySize) / 2)
+			obj.draw((leftmost + rightmost) / 2, rubyY - (textHeight + rubyHeight) / 2)
 		end
 	end
 
@@ -443,20 +443,18 @@ function main()
 		obj.setoption("drawtarget", "tempbuffer", bufferWidth, bufferHeight)
 		
 		-- 対象メインテキストの左端位置
-		startPosition =
-			(textAlign == 1) and 0              or	-- 左揃え
-			(textAlign == 2) and -textWidth     or	-- 右揃え
-			                     -textWidth / 2   	-- 中央揃え
+		startPosition = -textWidth / 2
 
+		-- 変化時間比率描画
 		obj.setfont(unpack(FONT_GUIDE))
 		position = startPosition
 		for i = 1, len do
 			obj.load("text", tostring(timeBeats[i]))
-			obj.draw(position + charWidths[i] / 2, (textSize + FONT_GUIDE[2]) / 2)
-			position = position + charWidths[i] + kerning
+			obj.draw(position + (charWidths[i] - ((i < len) and kerning or 0)) / 2, (textHeight + FONT_GUIDE[2]) / 2)
+			position = position + charWidths[i]
 		end
 		obj.load("text", "変化時間比率")
-		obj.draw(startPosition + textWidth / 2, (textSize + FONT_GUIDE[2] * 3) / 2)
+		obj.draw(startPosition + textWidth / 2, (textHeight + FONT_GUIDE[2] * 3) / 2)
 
 		-- ガイドをキャッシュに退避
 		obj.copybuffer("cache:guide", "tempbuffer")
@@ -469,25 +467,29 @@ function main()
 
 
 	-- 背景描画
-	obj.copybuffer("obj", "cache:background")
+	obj.copybuffer("object", "cache:background")
 	obj.effect("クリッピング", "左", bufferWidth / 2 + clipping)
 	obj.draw((bufferWidth / 2 + clipping) / 2)
 
 
 	-- 前景描画
-	obj.copybuffer("obj", "cache:foreground")
+	obj.copybuffer("object", "cache:foreground")
 	obj.effect("クリッピング", "右", bufferWidth / 2 - clipping)
 	obj.draw(-(bufferWidth / 2 - clipping) / 2)
 
 
 	-- ガイド描画
 	if showGuide then
-		obj.copybuffer("obj", "cache:guide")
+		obj.copybuffer("object", "cache:guide")
 		obj.draw()
 	end
 
 
+
+	---- 描画・水平配置調整
 	obj.load("tempbuffer")
+	obj.cx = (textAlign % 3 - 1) * textWidth / 2
+	obj.cy = (math.floor(textAlign / 3) - 1) * textHeight / 2
 end
 
 
