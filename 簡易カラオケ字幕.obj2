@@ -291,7 +291,7 @@ function main()
 		0
 	)
 	local bufferWidth = textWidth + marginWidth * 2
-	local bufferHeight = textHeight + 2 * (MARGIN_Y + math.ceil(math.abs(rubyY)) + math.max(rubyHeight, FONT_GUIDE[2] * 2))
+	local bufferHeight = textHeight + 2 * (MARGIN_Y + math.max(0, rubyHeight - rubyY, rubyY - textHeight, FONT_GUIDE[2] * 2))
 
 
 
