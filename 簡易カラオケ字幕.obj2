@@ -396,7 +396,7 @@ function main()
 
 			-- ルビ描画
 			obj.load("text", textPrefix .. table.concat(bgRubys[i], rubyKernControl))
-			obj.draw(rubyPosition, rubyY - (textHeight + rubyHeight) / 2)
+			obj.draw(rubyPosition + rubyX, rubyY - (textHeight + rubyHeight) / 2)
 		end
 	end
 
@@ -463,7 +463,7 @@ function main()
 
 			-- ルビ描画
 			obj.load("text", textPrefix .. table.concat(fgRubys[i], rubyKernControl))
-			obj.draw(rubyPosition, rubyY - (textHeight + rubyHeight) / 2)
+			obj.draw(rubyPosition + rubyX, rubyY - (textHeight + rubyHeight) / 2)
 		end
 	end
 
