@@ -35,6 +35,7 @@ local GROUP_BEGIN1 = "["	-- ルビグループの開始記号1
 local GROUP_BEGIN2 = "{"	-- ルビグループの開始記号2
 local GROUP_END1 = "]"	-- ルビグループの終了記号1
 local GROUP_END2 = "}"	-- ルビグループの終了記号2
+local SEPARATOR = "/"	-- ルビを文字毎に割り付けるときの分離子
 local CONNECTOR = "_"	-- 複数コードポイントを纏めて1文字として扱うときの結合子
 local ESCAPE = "%"	-- エスケープ記号
 
@@ -52,7 +53,27 @@ local FONT_GUIDE = { "MS UI Gothic", 20, 4, 0xFF8080, 0x000000 }
 
 
 ------ 関数定義
--- UTF-8文字列を文字毎に分割して配列化
+-- 配列を特定の値で区切って配列の配列化
+function splitArray(array, separator)
+	if #array == 0 then
+		return {{}}
+	end
+
+	local ret = {}
+	local ptr = 1
+	for i = 1, #array do
+		if array[i] == separator then
+			ret[#ret + 1] = {unpack(array, ptr, i - 1)}
+			ptr = i + 1
+		end
+	end
+	ret[#ret + 1] = {unpack(array, ptr)}
+
+	return ret
+end
+
+
+-- UTF-8文字列をコードポイント毎に分割して配列化
 function stringToCharArray(str)
 	if str == "" then
 		return {}
@@ -75,18 +96,19 @@ function stringToCharArray(str)
 end
 
 
--- UTF-8文字列をパース
-function parseString(str)
+-- UTF-8文字列を読み込み、ルビグループ・結合子・エスケープ記号を解析
+-- parseSeparator が真のときはルビグループ内に限り分離子を false に置換
+function parseString(str, parseSeparator)
 	-- 返り値
-	local chars = {}	-- 文字列を文字毎に分割して配列化にしたもの
+	local chars = {}	-- 文字列を文字毎に分割して配列にしたもの
 	local groupPositions = {}	-- 各ルビグループの { 開始位置, 終了位置, 開始記号, 終了記号 } の4つ組を並べた配列
 
 	-- 字句読込モード
-	local isFollowingToEscape = false
-	local isFollowingToConnector = false
-	local allowConnector = false
-	local beginningPosition = nil
-	local beginningChar = nil
+	local isFollowingToEscape = false	-- エスケープ記号の直後
+	local isFollowingToConnector = false	-- 結合子の直後
+	local allowConnector = false	-- 結合子の出現が許容される文脈
+	local beginningPosition = nil	-- 読込中のルビグループの開始位置
+	local beginningChar = nil	-- 読込中のルビグループの開始記号
 
 	-- パース
 	local raw = stringToCharArray(str)
@@ -104,26 +126,34 @@ function parseString(str)
 			isFollowingToEscape = true
 		elseif raw[i] == CONNECTOR then
 			if not allowConnector then
-				return nil, nil	-- 結合子が連続している
+				return nil, nil	-- 結合子の出現が許容されていない
 			end
 			isFollowingToConnector = true
 			allowConnector = false
 		elseif raw[i] == GROUP_BEGIN1 or raw[i] == GROUP_BEGIN2 then
 			if beginningPosition then
 				return nil, nil	-- ルビグループの中でルビグループを開始しようとしている
+			elseif isFollowingToConnector then
+				return nil, nil	-- ルビグループの内外を結合しようとしている
 			end
 			beginningPosition = #chars + 1
 			beginningChar = raw[i]
-			isFollowingToConnector = false
 			allowConnector = false
 		elseif raw[i] == GROUP_END1 or raw[i] == GROUP_END2 then
 			if not beginningPosition then
 				return nil, nil	-- 開始していないルビグループを終了しようとしている
+			elseif isFollowingToConnector then
+				return nil, nil	-- ルビグループの内外を結合しようとしている
 			end
 			groupPositions[#groupPositions + 1] = { beginningPosition, #chars, beginningChar, raw[i] }
 			beginningPosition = nil
 			beginningChar = nil
-			isFollowingToConnector = false
+			allowConnector = false
+		elseif raw[i] == SEPARATOR and parseSeparator and beginningPosition then
+			if isFollowingToConnector then
+				return nil, nil	-- ルビ分離子の前後を結合しようとしている
+			end
+			chars[#chars + 1] = false	-- 分離子は false として登録する
 			allowConnector = false
 		else
 			if isFollowingToConnector then
@@ -143,6 +173,57 @@ function parseString(str)
 end
 
 
+-- 字幕とルビの解析
+function parseTexts(text, ruby)
+	-- 返り値
+	local texts = {}	-- メインテキスト文字列（文字の配列）
+	local rubys = {}	-- 各ルビグループの { 開始位置, 終了位置, 開始記号, 終了記号, ルビ文字列（文字の配列） } の5つ組を並べた配列
+
+	-- メインテキストの一次解析
+	local rawTexts, rawTextPositions = parseString(text, false)
+	if not rawTexts then
+		local errMsg = stringToCharArray(ERROR_MESSAGE)
+		return errMsg, {}, {}
+	end
+
+	-- ルビの一次解析
+	local rawRubys, rawRubyPositions = parseString(ruby, true)
+	if not rawRubys then
+		local errMsg = stringToCharArray(ERROR_MESSAGE)
+		for i = 1, #rawTextPositions do
+			rawTextPositions[i][5] = errMsg
+		end
+		return rawTexts, rawTextPositions
+	end
+
+	-- 分離子の解析・ルビ文字列の分解
+	texts = rawTexts
+	for i = 1, math.min(#rawTextPositions, #rawRubyPositions) do
+		-- ルビ文字列を分離子で分割
+		local splitRuby = splitArray({unpack(rawRubys, rawRubyPositions[i][1], rawRubyPositions[i][2])}, false)
+
+		-- 分離子が無い場合は一次解析の結果をその侭使用
+		if #splitRuby <= 1 then
+			if splitRuby[1] and #splitRuby[1] > 0 then
+				rawTextPositions[i][5] = splitRuby[1]
+				rubys[#rubys + 1] = rawTextPositions[i]
+			end
+
+		-- 分離子が在る場合はメインテキストの文字毎に分割
+		else
+			for j = rawTextPositions[i][1], rawTextPositions[i][2] do
+				local pos = j - rawTextPositions[i][1] + 1
+				if splitRuby[pos] and #splitRuby[pos] > 0 then
+					rubys[#rubys + 1] = { j, j, rawTextPositions[i][3], rawTextPositions[i][4], splitRuby[pos] }
+				end
+			end
+		end
+	end
+
+	return texts, rubys
+end
+
+
 
 ------ 事前処理
 -- 出力モードの判定
@@ -153,54 +234,16 @@ showGuide = showGuide and not obj.getinfo("saving")
 ------ メイン処理
 function main()
 	---- 文字列のパース
-	-- 背景メインテキスト
-	local bgTexts, bgRubyPositions = parseString(karaokeText)
-	if not bgTexts then
-		bgTexts, bgRubyPositions = stringToCharArray(ERROR_MESSAGE), {}
-	end
+	-- 背景
+	local bgTexts, bgRubys = parseTexts(karaokeText, karaokeRuby)
 
 
-	-- 背景ルビ
-	local bgRubys = {}
-	local tmp1, tmp2 = parseString(karaokeRuby)
-	if tmp1 then
-		for i = 1, #tmp2 do
-			bgRubys[i] = {unpack(tmp1, tmp2[i][1], tmp2[i][2])}
-		end
-	else
-		errMsg = stringToCharArray(ERROR_MESSAGE)
-		for i = 1, #bgRubyPositions do
-			bgRubys[i] = errMsg
-		end
-	end
-
-
-	-- 前景メインテキスト
-	local fgTexts = bgTexts
-	local fgRubyPositions = bgRubyPositions
-	if fakeText ~= "" then
-		fgTexts, fgRubyPositions = parseString(fakeText)
-		if not fgTexts then
-			fgTexts, fgRubyPositions = stringToCharArray(ERROR_MESSAGE), {}
-		end
-	end
-
-
-	-- 前景ルビ
-	local fgRubys = bgRubys
-	if fakeRuby ~= "" then
-		fgRubys = {}
-		tmp1, tmp2 = parseString(fakeRuby)
-		if tmp1 then
-			for i = 1, #tmp2 do
-				fgRubys[i] = {unpack(tmp1, tmp2[i][1], tmp2[i][2])}
-			end
-		else
-			errMsg = stringToCharArray(ERROR_MESSAGE)
-			for i = 1, #fgRubyPositions do
-				fgRubys[i] = errMsg
-			end
-		end
+	-- 前景
+	local fgTexts, fgRubys = bgTexts, bgRubys
+	if fakeText ~= "" or fakeRuby ~= "" then
+		fakeText = (fakeText ~= "") and fakeText or karaokeText
+		fakeRuby = (fakeRuby ~= "") and fakeRuby or karaokeRuby
+		fgTexts, fgRubys = parseTexts(fakeText, fakeRuby)
 	end
 
 
@@ -212,7 +255,7 @@ function main()
 
 
 
-	---- 各文字の幅を取得
+	---- 文字列の幅と高さを取得
 	local textPrefix = "<s,," .. (isBold and "B" or "") .. (isItalic and "I" or "") .. ">"
 	local bgCharWidths = {}
 	local bgRubyWidths = {}
@@ -265,7 +308,7 @@ function main()
 	local rubyHeight = 0
 	obj.setfont(font, rubySize, decoration)
 	for i = 1, #bgRubys do
-		obj.load("text", textPrefix .. table.concat(bgRubys[i], ""))
+		obj.load("text", textPrefix .. table.concat(bgRubys[i][5], ""))
 		bgRubyWidths[i] = obj.w
 		rubyHeight = math.max(rubyHeight, obj.h)
 	end
@@ -273,7 +316,7 @@ function main()
 
 	-- 前景ルビ
 	for i = 1, #fgRubys do
-		obj.load("text", textPrefix .. table.concat(fgRubys[i], ""))
+		obj.load("text", textPrefix .. table.concat(fgRubys[i][5], ""))
 		fgRubyWidths[i] = obj.w
 		rubyHeight = math.max(rubyHeight, obj.h)
 	end
@@ -359,45 +402,43 @@ function main()
 
 	-- 背景ルビ
 	obj.setfont(font, rubySize, decoration, bgInnerColor, bgOuterColor)
-	for i = 1, #bgRubyPositions do
-		if bgRubys[i] and #bgRubys[i] > 0 then
-			-- ルビ対象文字列の左端
-			local leftmost = startPosition
-			for j = 1, bgRubyPositions[i][1] - 1 do
-				leftmost = leftmost + bgCharWidths[j]
-			end
-
-			-- ルビ対象文字列の右端
-			local rightmost = leftmost
-			for j = bgRubyPositions[i][1], bgRubyPositions[i][2] do
-				rightmost = rightmost + bgCharWidths[j]
-			end
-			if bgRubyPositions[i][2] < #bgTexts then
-				rightmost = rightmost - kerning
-			end
-
-			-- ルビの幅
-			obj.load("text", textPrefix .. table.concat(bgRubys[i], ""))
-			local rubyWidth = obj.w
-
-			-- ルビ描画位置
-			local rubyPosition = (leftmost + rightmost) / 2
-			local rubyKernControl = ""
-			if bgRubyPositions[i][3] == GROUP_BEGIN1 and bgRubyPositions[i][4] == GROUP_END1 then	-- 中央揃え
-				-- do nothing
-			elseif bgRubyPositions[i][3] == GROUP_BEGIN2 and bgRubyPositions[i][4] == GROUP_END1 then	-- 左寄せ
-				rubyPosition = leftmost + rubyWidth / 2
-			elseif bgRubyPositions[i][3] == GROUP_BEGIN1 and bgRubyPositions[i][4] == GROUP_END2 then	-- 右寄せ
-				rubyPosition = rightmost - rubyWidth / 2
-			elseif #bgRubys[i] > 1 then	-- 均等割り付け
-				local rubyKerning = (rightmost - leftmost - rubyWidth) / (#bgRubys[i] - 1)
-				rubyKernControl = ((rubyKerning >= 0) and "<p+" or "<p") .. tostring(rubyKerning) .. ",+0>"
-			end
-
-			-- ルビ描画
-			obj.load("text", textPrefix .. table.concat(bgRubys[i], rubyKernControl))
-			obj.draw(rubyPosition + rubyX, rubyY - (textHeight + rubyHeight) / 2)
+	for i = 1, #bgRubys do
+		-- ルビ対象文字列の左端
+		local leftmost = startPosition
+		for j = 1, bgRubys[i][1] - 1 do
+			leftmost = leftmost + bgCharWidths[j]
 		end
+
+		-- ルビ対象文字列の右端
+		local rightmost = leftmost
+		for j = bgRubys[i][1], bgRubys[i][2] do
+			rightmost = rightmost + bgCharWidths[j]
+		end
+		if bgRubys[i][2] < #bgTexts then
+			rightmost = rightmost - kerning
+		end
+
+		-- ルビの幅
+		obj.load("text", textPrefix .. table.concat(bgRubys[i][5], ""))
+		local rubyWidth = obj.w
+
+		-- ルビ描画位置
+		local rubyPosition = (leftmost + rightmost) / 2
+		local rubyKernControl = ""
+		if bgRubys[i][3] == GROUP_BEGIN1 and bgRubys[i][4] == GROUP_END1 then	-- 中央揃え
+			-- do nothing
+		elseif bgRubys[i][3] == GROUP_BEGIN2 and bgRubys[i][4] == GROUP_END1 then	-- 左寄せ
+			rubyPosition = leftmost + rubyWidth / 2
+		elseif bgRubys[i][3] == GROUP_BEGIN1 and bgRubys[i][4] == GROUP_END2 then	-- 右寄せ
+			rubyPosition = rightmost - rubyWidth / 2
+		elseif #bgRubys[i][5] > 1 then	-- 均等割り付け
+			local rubyKerning = (rightmost - leftmost - rubyWidth) / (#bgRubys[i][5] - 1)
+			rubyKernControl = ((rubyKerning >= 0) and "<p+" or "<p") .. tostring(rubyKerning) .. ",+0>"
+		end
+
+		-- ルビ描画
+		obj.load("text", textPrefix .. table.concat(bgRubys[i][5], rubyKernControl))
+		obj.draw(rubyPosition + rubyX, rubyY - (textHeight + rubyHeight) / 2)
 	end
 
 
@@ -426,45 +467,43 @@ function main()
 
 	-- 前景ルビ
 	obj.setfont(font, rubySize, decoration, fgInnerColor, fgOuterColor)
-	for i = 1, #fgRubyPositions do
-		if fgRubys[i] and #fgRubys[i] > 0 then
-			-- ルビ対象文字列の左端
-			local leftmost = startPosition
-			for j = 1, fgRubyPositions[i][1] - 1 do
-				leftmost = leftmost + fgCharWidths[j]
-			end
-
-			-- ルビ対象文字列の右端
-			local rightmost = leftmost
-			for j = fgRubyPositions[i][1], fgRubyPositions[i][2] do
-				rightmost = rightmost + fgCharWidths[j]
-			end
-			if fgRubyPositions[i][2] < #fgTexts then
-				rightmost = rightmost - kerning
-			end
-
-			-- ルビの幅
-			obj.load("text", textPrefix .. table.concat(fgRubys[i], ""))
-			local rubyWidth = obj.w
-
-			-- ルビ描画位置
-			local rubyPosition = (leftmost + rightmost) / 2
-			local rubyKernControl = ""
-			if fgRubyPositions[i][3] == GROUP_BEGIN1 and fgRubyPositions[i][4] == GROUP_END1 then	-- 中央揃え
-				-- do nothing
-			elseif fgRubyPositions[i][3] == GROUP_BEGIN2 and fgRubyPositions[i][4] == GROUP_END1 then	-- 左寄せ
-				rubyPosition = leftmost + rubyWidth / 2
-			elseif fgRubyPositions[i][3] == GROUP_BEGIN1 and fgRubyPositions[i][4] == GROUP_END2 then	-- 右寄せ
-				rubyPosition = rightmost - rubyWidth / 2
-			elseif #fgRubys[i] > 1 then	-- 均等割り付け
-				local rubyKerning = (rightmost - leftmost - rubyWidth) / (#fgRubys[i] - 1)
-				rubyKernControl = ((rubyKerning >= 0) and "<p+" or "<p") .. tostring(rubyKerning) .. ",+0>"
-			end
-
-			-- ルビ描画
-			obj.load("text", textPrefix .. table.concat(fgRubys[i], rubyKernControl))
-			obj.draw(rubyPosition + rubyX, rubyY - (textHeight + rubyHeight) / 2)
+	for i = 1, #fgRubys do
+		-- ルビ対象文字列の左端
+		local leftmost = startPosition
+		for j = 1, fgRubys[i][1] - 1 do
+			leftmost = leftmost + fgCharWidths[j]
 		end
+
+		-- ルビ対象文字列の右端
+		local rightmost = leftmost
+		for j = fgRubys[i][1], fgRubys[i][2] do
+			rightmost = rightmost + fgCharWidths[j]
+		end
+		if fgRubys[i][2] < #fgTexts then
+			rightmost = rightmost - kerning
+		end
+
+		-- ルビの幅
+		obj.load("text", textPrefix .. table.concat(fgRubys[i][5], ""))
+		local rubyWidth = obj.w
+
+		-- ルビ描画位置
+		local rubyPosition = (leftmost + rightmost) / 2
+		local rubyKernControl = ""
+		if fgRubys[i][3] == GROUP_BEGIN1 and fgRubys[i][4] == GROUP_END1 then	-- 中央揃え
+			-- do nothing
+		elseif fgRubys[i][3] == GROUP_BEGIN2 and fgRubys[i][4] == GROUP_END1 then	-- 左寄せ
+			rubyPosition = leftmost + rubyWidth / 2
+		elseif fgRubys[i][3] == GROUP_BEGIN1 and fgRubys[i][4] == GROUP_END2 then	-- 右寄せ
+			rubyPosition = rightmost - rubyWidth / 2
+		elseif #fgRubys[i][5] > 1 then	-- 均等割り付け
+			local rubyKerning = (rightmost - leftmost - rubyWidth) / (#fgRubys[i][5] - 1)
+			rubyKernControl = ((rubyKerning >= 0) and "<p+" or "<p") .. tostring(rubyKerning) .. ",+0>"
+		end
+
+		-- ルビ描画
+		obj.load("text", textPrefix .. table.concat(fgRubys[i][5], rubyKernControl))
+		obj.draw(rubyPosition + rubyX, rubyY - (textHeight + rubyHeight) / 2)
 	end
 
 
